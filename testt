@@ -1,0 +1,338 @@
+“””
+🤖 Bot Sprzedażowy — Analizy Bukmacherskie
+AI: Groq (darmowe)
+Wymagania: pip install python-telegram-bot==20.7 groq
+“””
+
+import logging
+from groq import Groq
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+Application, CommandHandler, CallbackQueryHandler,
+MessageHandler, filters, ContextTypes,
+)
+
+# ══════════════════════════════════════════════
+
+# KONFIGURACJA — UZUPEŁNIJ PRZED URUCHOMIENIEM
+
+# ══════════════════════════════════════════════
+
+BOT_TOKEN   = “8604868460:AAGjErtjfmS_60d-8imSIrs5FGkKrNXnNSA”
+GROQ_KEY    = “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”
+
+NAZWA       = “TwojaNazwa Betting”
+ADMIN_ID    = 5398655862# Twoje Telegram ID — sprawdź przez @userinfobot
+
+BLIK           = “123-456-789”
+NUMER_KONTA    = “PL00 0000 0000 0000 0000 0000 0000”
+NAZWA_ODBIORCY = “Jan Kowalski”
+
+CENA_ANALIZA  = “29 zł”
+CENA_PAKIET_M = “99 zł / miesiąc”
+CENA_VIP      = “149 zł / miesiąc”
+CENA_PDF      = “49 zł”
+
+LINK_KANAL_VIP = “https://t.me/twoj_kanal_vip”
+
+# ══════════════════════════════════════════════
+
+logging.basicConfig(
+format=”%(asctime)s - %(name)s - %(levelname)s - %(message)s”,
+level=logging.INFO,
+)
+logger = logging.getLogger(**name**)
+
+groq_client = Groq(api_key=GROQ_KEY)
+chat_history: dict[int, list] = {}
+
+SYSTEM_PROMPT = f””“Jesteś asystentem sprzedażowym serwisu {NAZWA} — sprzedającego analizy bukmacherskie.
+Twoim zadaniem jest odpowiadać na pytania klientów i kierować ich do zakupu.
+
+OFERTA:
+
+- Pojedyncza analiza/typ: {CENA_ANALIZA}
+- Pakiet miesięczny (wszystkie analizy): {CENA_PAKIET_M}
+- Kanał VIP Telegram (sygnały na żywo + analizy): {CENA_VIP}
+- PDF/Poradnik (strategie, jak stawiać): {CENA_PDF}
+
+PŁATNOŚĆ: BLIK lub przelew bankowy. Po wpłacie klient wysyła potwierdzenie.
+
+ZASADY:
+
+- Odpowiadaj po polsku, krótko i przyjaźnie (max 3-4 zdania)
+- Zawsze na końcu zachęcaj do zakupu lub napisz “Kliknij /kup żeby zamówić”
+- NIE obiecuj 100% wygranych — bądź uczciwy
+- Jeśli pytają o cenę → podaj ją i dodaj zachętę do kupna
+- Jeśli pytają jak kupić → wyjaśnij i napisz /kup
+  “””
+
+# ── Klawiatury ────────────────────────────────
+
+def kb_glowna():
+return InlineKeyboardMarkup([
+[
+InlineKeyboardButton(“📊 Oferta”,        callback_data=“oferta”),
+InlineKeyboardButton(“💎 Kanał VIP”,     callback_data=“vip”),
+],
+[
+InlineKeyboardButton(“📖 Jak to działa”, callback_data=“jak_dziala”),
+InlineKeyboardButton(“📕 PDF/Poradnik”,  callback_data=“pdf”),
+],
+[
+InlineKeyboardButton(“💳 Kup teraz”,     callback_data=“kup”),
+InlineKeyboardButton(“❓ Zapytaj AI”,    callback_data=“ai_info”),
+],
+])
+
+def kb_oferta():
+return InlineKeyboardMarkup([
+[InlineKeyboardButton(“🔹 Pojedyncza analiza”,  callback_data=“kup_analiza”)],
+[InlineKeyboardButton(“📦 Pakiet miesięczny”,   callback_data=“kup_pakiet”)],
+[InlineKeyboardButton(“💎 Kanał VIP”,           callback_data=“kup_vip”)],
+[InlineKeyboardButton(“📕 PDF/Poradnik”,        callback_data=“kup_pdf”)],
+[InlineKeyboardButton(“◀️ Wróć”,               callback_data=“menu”)],
+])
+
+def kb_platnosc(produkt: str):
+return InlineKeyboardMarkup([
+[InlineKeyboardButton(“✅ Wysłałem potwierdzenie”, callback_data=f”potwierdzenie_{produkt}”)],
+[InlineKeyboardButton(“◀️ Wróć do oferty”,        callback_data=“oferta”)],
+])
+
+def kb_powrot():
+return InlineKeyboardMarkup([
+[InlineKeyboardButton(“◀️ Menu główne”, callback_data=“menu”)]
+])
+
+def kb_po_ai():
+return InlineKeyboardMarkup([
+[
+InlineKeyboardButton(“💳 Kup teraz”, callback_data=“kup”),
+InlineKeyboardButton(“📊 Oferta”,    callback_data=“oferta”),
+]
+])
+
+TEKST_PLATNOSC = (
+“💳 *Dane do płatności:*\n\n”
+f”📱 BLIK: `{BLIK}`\n”
+f”🏦 Konto: `{NUMER_KONTA}`\n”
+f”👤 Odbiorca: {NAZWA_ODBIORCY}\n\n”
+“📸 Po wpłacie *wyślij zrzut ekranu* potwierdzenia tutaj.\n”
+“✅ Dostęp aktywowany w ciągu *15 minut*.”
+)
+
+# ── /start ────────────────────────────────────
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+user = update.effective_user
+chat_history.pop(user.id, None)
+tekst = (
+f”👋 Cześć *{user.first_name}*!\n\n”
+f”Witaj w *{NAZWA}* ⚽🏀🎾\n\n”
+“📈 Profesjonalne analizy bukmacherskie — pomagamy zarabiać na zakładach.\n\n”
+“👇 Wybierz co Cię interesuje:”
+)
+await update.message.reply_text(tekst, parse_mode=“Markdown”,
+reply_markup=kb_glowna())
+
+async def kup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+await update.message.reply_text(
+“🛒 *Wybierz co chcesz kupić:*”,
+parse_mode=“Markdown”, reply_markup=kb_oferta()
+)
+
+# ── Przyciski ─────────────────────────────────
+
+async def przycisk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+q = update.callback_query
+await q.answer()
+d = q.data
+
+```
+if d == "menu":
+    await q.edit_message_text(
+        f"🏠 *Menu — {NAZWA}*\n\nWybierz opcję:",
+        parse_mode="Markdown", reply_markup=kb_glowna()
+    )
+
+elif d == "oferta":
+    tekst = (
+        "📊 *Nasza oferta:*\n\n"
+        f"🔹 *Pojedyncza analiza* — {CENA_ANALIZA}\n"
+        "   Jedna starannie opracowana analiza meczu.\n\n"
+        f"📦 *Pakiet miesięczny* — {CENA_PAKIET_M}\n"
+        "   Wszystkie analizy przez cały miesiąc.\n\n"
+        f"💎 *Kanał VIP* — {CENA_VIP}\n"
+        "   Sygnały na żywo + analizy + kontakt prywatny.\n\n"
+        f"📕 *PDF/Poradnik* — {CENA_PDF}\n"
+        "   Strategie, bankroll, jak czytać kursy."
+    )
+    await q.edit_message_text(tekst, parse_mode="Markdown",
+                              reply_markup=kb_oferta())
+
+elif d == "jak_dziala":
+    tekst = (
+        "📖 *Jak to działa?*\n\n"
+        "1️⃣ Wybierasz produkt i płacisz BLIK-iem lub przelewem\n"
+        "2️⃣ Wysyłasz tutaj zrzut ekranu potwierdzenia\n"
+        "3️⃣ W ciągu 15 min dostajesz dostęp\n"
+        "4️⃣ Analizy trafiają do Ciebie przed meczami\n\n"
+        "Masz pytania? Napisz — odpiszę! 💬"
+    )
+    await q.edit_message_text(tekst, parse_mode="Markdown",
+                              reply_markup=kb_powrot())
+
+elif d == "vip":
+    tekst = (
+        "💎 *Kanał VIP — co dostajesz?*\n\n"
+        "✅ Sygnały bukmacherskie na żywo\n"
+        "✅ Szczegółowe analizy przed meczem\n"
+        "✅ Statystyki i rekomendacje kursów\n"
+        "✅ Prywatny kontakt z analitykiem\n"
+        "✅ Historia typów i skuteczność\n\n"
+        f"💰 Cena: *{CENA_VIP}*"
+    )
+    await q.edit_message_text(tekst, parse_mode="Markdown",
+                              reply_markup=InlineKeyboardMarkup([
+                                  [InlineKeyboardButton("💳 Kup dostęp VIP", callback_data="kup_vip")],
+                                  [InlineKeyboardButton("◀️ Wróć", callback_data="menu")],
+                              ]))
+
+elif d == "pdf":
+    tekst = (
+        "📕 *PDF/Poradnik — zawiera:*\n\n"
+        "✅ Jak czytać kursy bukmacherskie\n"
+        "✅ Strategia value betting\n"
+        "✅ Zarządzanie bankrollem\n"
+        "✅ Najczęstsze błędy i jak ich unikać\n"
+        "✅ Polecane rynki i ligi\n\n"
+        f"💰 Cena: *{CENA_PDF}* (jednorazowo)"
+    )
+    await q.edit_message_text(tekst, parse_mode="Markdown",
+                              reply_markup=InlineKeyboardMarkup([
+                                  [InlineKeyboardButton("💳 Kup PDF", callback_data="kup_pdf")],
+                                  [InlineKeyboardButton("◀️ Wróć", callback_data="menu")],
+                              ]))
+
+elif d == "ai_info":
+    await q.edit_message_text(
+        "💬 *Masz pytanie? Po prostu napisz!*\n\n"
+        "Nasz asystent AI odpowie na wszystko:\n"
+        "• O ofercie i cenach\n"
+        "• Jak działają analizy\n"
+        "• Jak kupić i zapłacić\n"
+        "• O strategiach bukmacherskich\n\n"
+        "_Napisz wiadomość poniżej_ 👇",
+        parse_mode="Markdown", reply_markup=kb_powrot()
+    )
+
+elif d == "kup":
+    await q.edit_message_text("🛒 *Wybierz co chcesz kupić:*",
+                              parse_mode="Markdown", reply_markup=kb_oferta())
+
+elif d == "kup_analiza":
+    await q.edit_message_text(
+        f"🔹 *Pojedyncza analiza — {CENA_ANALIZA}*\n\n" + TEKST_PLATNOSC +
+        f"\n\n📌 W tytule wpisz: `ANALIZA {q.from_user.id}`",
+        parse_mode="Markdown", reply_markup=kb_platnosc("analiza")
+    )
+
+elif d == "kup_pakiet":
+    await q.edit_message_text(
+        f"📦 *Pakiet miesięczny — {CENA_PAKIET_M}*\n\n" + TEKST_PLATNOSC +
+        f"\n\n📌 W tytule wpisz: `PAKIET {q.from_user.id}`",
+        parse_mode="Markdown", reply_markup=kb_platnosc("pakiet")
+    )
+
+elif d == "kup_vip":
+    await q.edit_message_text(
+        f"💎 *Kanał VIP — {CENA_VIP}*\n\n" + TEKST_PLATNOSC +
+        f"\n\n📌 W tytule wpisz: `VIP {q.from_user.id}`",
+        parse_mode="Markdown", reply_markup=kb_platnosc("vip")
+    )
+
+elif d == "kup_pdf":
+    await q.edit_message_text(
+        f"📕 *PDF/Poradnik — {CENA_PDF}*\n\n" + TEKST_PLATNOSC +
+        f"\n\n📌 W tytule wpisz: `PDF {q.from_user.id}`",
+        parse_mode="Markdown", reply_markup=kb_platnosc("pdf")
+    )
+
+elif d.startswith("potwierdzenie_"):
+    produkt = d.replace("potwierdzenie_", "").upper()
+    user = q.from_user
+    await q.edit_message_text(
+        "⏳ *Dziękujemy za zamówienie!*\n\n"
+        "Sprawdzamy płatność — dostęp aktywowany w ciągu *15 minut*. ✅\n\n"
+        "Jeśli masz pytania, napisz tutaj 💬",
+        parse_mode="Markdown"
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"🔔 *NOWE ZAMÓWIENIE!*\n\n"
+                f"👤 {user.full_name} (@{user.username})\n"
+                f"🆔 ID: `{user.id}`\n"
+                f"📦 Produkt: *{produkt}*\n\n"
+                "⚠️ Sprawdź płatność i aktywuj dostęp!"
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Błąd powiadomienia admina: {e}")
+```
+
+# ── AI — odpowiedzi tekstowe ──────────────────
+
+async def ai_odpowiedz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+user = update.effective_user
+tekst = update.message.text
+
+```
+if user.id not in chat_history:
+    chat_history[user.id] = []
+
+chat_history[user.id].append({"role": "user", "content": tekst})
+
+if len(chat_history[user.id]) > 10:
+    chat_history[user.id] = chat_history[user.id][-10:]
+
+await context.bot.send_chat_action(
+    chat_id=update.effective_chat.id, action="typing"
+)
+
+try:
+    response = groq_client.chat.completions.create(
+        model="llama3-8b-8192",
+        max_tokens=300,
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + chat_history[user.id],
+    )
+    odpowiedz = response.choices[0].message.content
+    chat_history[user.id].append({"role": "assistant", "content": odpowiedz})
+
+    await update.message.reply_text(odpowiedz, reply_markup=kb_po_ai())
+
+except Exception as e:
+    logger.error(f"Groq error: {e}")
+    await update.message.reply_text(
+        "Przepraszam, coś poszło nie tak. Spróbuj ponownie lub napisz /start",
+        reply_markup=kb_glowna()
+    )
+```
+
+# ── Start ──────────────────────────────────────
+
+def main():
+app = Application.builder().token(BOT_TOKEN).build()
+app.add_handler(CommandHandler(“start”, start))
+app.add_handler(CommandHandler(“kup”,   kup_cmd))
+app.add_handler(CommandHandler(“menu”,  start))
+app.add_handler(CallbackQueryHandler(przycisk))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_odpowiedz))
+logger.info(“✅ Bot uruchomiony!”)
+app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if **name** == “**main**”:
+main()
